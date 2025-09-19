@@ -1,26 +1,20 @@
-# week08/.github/workflows/frontend_ci.yml
-
 name: Frontend CI - Build & Push Image
 
 on:
   # Manual trigger
-  workflow_dispatch:
-
-  # Automatically on pushes to main branch
+  workflow_dispatch: {}
+  # Auto on changes to frontend or this workflow
   push:
-    branches:
-      - main
-    paths: # Only trigger if changes are in the frontend directory
+    branches: [ main ]
+    paths:
       - 'frontend/**'
-      - '.github/workflows/frontend_ci.yml' # Trigger if this workflow file changes
+      - '.github/workflows/frontend_ci.yml'
 
-# Define global environment variables that can be used across jobs
 env:
-  # ACR Login Server (e.g., myregistry.azurecr.io)
-  # This needs to be set as a GitHub Repository Secret
-  ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
-  # Dynamically generate image tags based on Git SHA and GitHub Run ID
-  # This provides unique, traceable tags for each image build
+  # Use the two ACR secrets you already created
+  ACR_NAME: ${{ secrets.AZURE_ACR_NAME }}                  # e.g. s223574045acr
+  ACR_LOGIN_SERVER: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}  # e.g. s223574045acr.azurecr.io
+  # Unique tag per run (keeps history) – we'll also push :latest
   IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
 
 jobs:
@@ -28,26 +22,36 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    # Azure login using a Service Principal secret
-    - name: Azure Login
-      uses: azure/login@v1
-      with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
+      # Log in to Azure with your Service Principal JSON in AZURE_CREDENTIALS
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-    # Login to Azure Container Registry (ACR)
-    - name: Login to Azure Container Registry
-      run: az acr login --name ${{ env.ACR_LOGIN_SERVER }}
+      # ACR login expects the short registry name (no .azurecr.io)
+      - name: Login to Azure Container Registry
+        run: az acr login --name "$ACR_NAME"
 
-    # Build and Push Docker image for Frontend
-    - name: Build and Push Frontend Image
-      run: |
-        docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:latest ./frontend/
-        docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:latest
+      # Build the frontend image and push both a unique tag and :latest
+      - name: Build & Push Docker image
+        run: |
+          echo "Building image ${ACR_LOGIN_SERVER}/frontend:${IMAGE_TAG}"
+          docker build -t ${ACR_LOGIN_SERVER}/frontend:${IMAGE_TAG} ./frontend/
+          docker push  ${ACR_LOGIN_SERVER}/frontend:${IMAGE_TAG}
 
-    # Logout from Azure for security (runs even if image push fails)
-    - name: Logout from Azure
-      run: az logout
-      if: always()
+          echo "Tagging and pushing :latest"
+          docker tag  ${ACR_LOGIN_SERVER}/frontend:${IMAGE_TAG} ${ACR_LOGIN_SERVER}/frontend:latest
+          docker push ${ACR_LOGIN_SERVER}/frontend:latest
+
+      - name: Show pushed tags (for logs)
+        run: |
+          echo "Pushed:"
+          echo "  ${ACR_LOGIN_SERVER}/frontend:${IMAGE_TAG}"
+          echo "  ${ACR_LOGIN_SERVER}/frontend:latest"
+
+      - name: Logout from Azure
+        if: always()
+        run: az logout
