@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       product_api_ip:
-        description: 'External IP of Product Service'
+        description: 'External IP of Product Service (e.g., http://X.X.X.X:8000)'
         required: true
         default: 'http://<ip_address>:8000'
       order_api_ip:
@@ -12,13 +12,17 @@ on:
         required: true
         default: 'http://<ip_address>:8001'
       aks_cluster_name:
-        description: 'Name of the AKS Cluster to deploy to'
+        description: 'AKS cluster name'
         required: true
-        default: '<aks_name>'
+        default: 's223574045-aks'
       aks_resource_group:
-        description: 'Resource Group of the AKS Cluster'
+        description: 'AKS resource group'
         required: true
-        default: '<resource_group_name>'
+        default: 's223574045-rg'
+
+env:
+  # unique image tag per run (and we also push :latest)
+  IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
 
 jobs:
   deploy_frontend:
@@ -34,36 +38,80 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # ✅ Use the secret that exists (registry *name*, not login server)
       - name: Login to Azure Container Registry
         run: az acr login --name ${{ secrets.AZURE_ACR_NAME }}
 
-      # Replace placeholders in frontend/main.js
-      - name: Inject Backend IPs into Frontend main.js
+      # Inject the two URLs into your source file before building
+      - name: Inject Backend IPs into frontend/main.js
         run: |
           sed -i "s|_PRODUCT_API_URL_|${{ inputs.product_api_ip }}|g" frontend/main.js
           sed -i "s|_ORDER_API_URL_|${{ inputs.order_api_ip }}|g" frontend/main.js
-          echo "===== main.js after substitution ====="
+          echo "----- main.js (after) -----"
           cat frontend/main.js
+          echo "---------------------------"
 
-      # Build & push to your ACR login server
-      - name: Build and Push Frontend Image
+      - name: Build and Push Frontend Image (tag + latest)
         run: |
-          docker build -t ${{ secrets.AZURE_ACR_LOGIN_SERVER }}/frontend:latest ./frontend/
-          docker push ${{ secrets.AZURE_ACR_LOGIN_SERVER }}/frontend:latest
+          docker build -t ${{ secrets.AZURE_ACR_LOGIN_SERVER }}/frontend:${{ env.IMAGE_TAG }} ./frontend/
+          docker push  ${{ secrets.AZURE_ACR_LOGIN_SERVER }}/frontend:${{ env.IMAGE_TAG }}
+          docker tag   ${{ secrets.AZURE_ACR_LOGIN_SERVER }}/frontend:${{ env.IMAGE_TAG }} ${{ secrets.AZURE_ACR_LOGIN_SERVER }}/frontend:latest
+          docker push  ${{ secrets.AZURE_ACR_LOGIN_SERVER }}/frontend:latest
 
-      # Get kubectl context for the target AKS
-      - name: Set Kubernetes context (get AKS credentials)
+      - name: Get AKS credentials
         run: |
           az aks get-credentials \
             --resource-group "${{ inputs.aks_resource_group }}" \
-            --name "${{ inputs.aks_cluster_name }}" --overwrite-existing
+            --name "${{ inputs.aks_cluster_name }}" \
+            --overwrite-existing
 
-      # Deploy frontend (make sure k8s/frontend.yaml uses your ACR image & pull secret)
-      - name: Deploy Frontend to AKS
+      # Apply your manifest so the Deployment/Service exist
+      - name: kubectl apply frontend manifest
         run: |
           kubectl apply -f k8s/frontend.yaml -n default
-          kubectl rollout status deployment/frontend -n default
+          kubectl get deploy/frontend -n default -o yaml | head -n 50
+
+      # Make sure pull secret is attached (idempotent)
+      - name: Ensure imagePullSecrets on Deployment
+        run: |
+          cat > patch.json <<'EOF'
+          {
+            "spec": {
+              "template": {
+                "spec": {
+                  "imagePullSecrets": [
+                    { "name": "acr-pull-secret" }
+                  ]
+                }
+              }
+            }
+          }
+          EOF
+          kubectl patch deployment frontend -n default --type merge --patch-file patch.json
+
+      # UPDATE the image in the Deployment to the fresh tag we just pushed
+      # Adjust CONTAINER_NAME if your container name differs in k8s/frontend.yaml
+      - name: Update Deployment image to freshly built tag
+        env:
+          CONTAINER_NAME: frontend-container
+        run: |
+          kubectl set image deployment/frontend -n default \
+            $CONTAINER_NAME=${{ secrets.AZURE_ACR_LOGIN_SERVER }}/frontend:${{ env.IMAGE_TAG }}
+
+      # Wait for roll-out; if it times out, print diagnostics and fail
+      - name: Wait for rollout
+        run: |
+          set +e
+          kubectl rollout status deployment/frontend -n default --timeout=120s
+          STATUS=$?
+          set -e
+          if [ "$STATUS" != "0" ]; then
+            echo "Rollout did not complete in time. Dumping diagnostics..."
+            kubectl get pods -n default -l app=frontend -o wide
+            kubectl describe deploy/frontend -n default || true
+            kubectl describe pod -n default -l app=frontend || true
+            kubectl logs -n default -l app=frontend --tail=200 || true
+            exit 1
+          fi
 
       - name: Logout
         run: az logout
