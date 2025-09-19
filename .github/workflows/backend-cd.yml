@@ -38,11 +38,25 @@ jobs:
       - name: Set Kubernetes context (get AKS credentials)
         run: |
           az aks get-credentials --resource-group ${{ github.event.inputs.aks_resource_group }} --name ${{ github.event.inputs.aks_cluster_name }} --overwrite-existing
-
-      - name: Attach ACR
+     
+     # - name: Attach ACR
+       # run: |
+       #   az aks update --name ${{ github.event.inputs.aks_cluster_name }} --resource-group ${{ github.event.inputs.aks_resource_group }} --attach-acr ${{ github.event.inputs.aks_acr_name }}
+      - name: Ensure ecomm namespace exists
         run: |
-          az aks update --name ${{ github.event.inputs.aks_cluster_name }} --resource-group ${{ github.event.inputs.aks_resource_group }} --attach-acr ${{ github.event.inputs.aks_acr_name }}
-
+           kubectl get ns ecomm || kubectl create ns ecomm
+      - name: Create/Update image pull secret for ACR
+        env:
+           ACR_SERVER: s223574045acr.azurecr.io
+           ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+           ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          kubectl create secret docker-registry acr-pull-secret \
+            --namespace ecomm \
+            --docker-server="$ACR_SERVER" \
+            --docker-username="$ACR_USERNAME" \
+            --docker-password="$ACR_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f -
       - name: Deploy Backend Infrastructure (Namespace, ConfigMaps, Secrets, Databases)
         run: |
           echo "Deploying backend infrastructure..."
