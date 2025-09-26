@@ -3,23 +3,42 @@ name: service-ci
 on:
   workflow_call:
     inputs:
-      service:       { required: true,  type: string }   # e.g., frontend, product_service
-      context:       { required: true,  type: string }   # folder path, e.g., frontend
-      dockerfile:    { required: false, type: string, default: "Dockerfile" }
-      image_name:    { required: true,  type: string }   # image repo name in ACR
-      push:          { required: true,  type: boolean }  # true only when you want to push
-      test_command:  { required: false, type: string, default: "" } # any extra tests
-      acr_name:      { required: true,  type: string }   # SHORT ACR name, e.g., week09acr91990
+      service:
+        required: true
+        type: string          # e.g., frontend, backend
+      context:
+        required: true
+        type: string          # folder path, e.g., frontend
+      dockerfile:
+        required: false
+        type: string
+        default: Dockerfile
+      image_name:
+        required: true
+        type: string          # repo name in ACR
+      push:
+        required: true
+        type: boolean         # true only when you want to push
+      test_command:
+        required: false
+        type: string
+        default: ""
+      acr_name:
+        required: true
+        type: string          # SHORT ACR name, e.g., week09acr91990
     secrets:
-      AZURE_CLIENT_ID:      { required: true }
-      AZURE_TENANT_ID:      { required: true }
-      AZURE_SUBSCRIPTION_ID:{ required: true }
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
 
 jobs:
   build_test_push:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write     # required for OIDC login to Azure
+      id-token: write     # for OIDC
       contents: read
       packages: write
 
@@ -27,51 +46,41 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # =======================
-      # Language setup & tests
-      # =======================
-
-      # Node.js project (if package.json exists)
+      # ---------- Language setup & tests ----------
       - name: Setup Node
-        if: hashFiles(format('{0}/package.json', inputs.context)) != ''
+        if: ${{ hashFiles(format('{0}/package.json', inputs.context)) != '' }}
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
+          cache: npm
           cache-dependency-path: ${{ inputs.context }}/package-lock.json
 
       - name: Install & Test (Node)
-        if: hashFiles(format('{0}/package.json', inputs.context)) != ''
+        if: ${{ hashFiles(format('{0}/package.json', inputs.context)) != '' }}
         working-directory: ${{ inputs.context }}
         run: |
           npm ci
           npm test --if-present
 
-      # Python project (if requirements.txt exists)
       - name: Setup Python
-        if: hashFiles(format('{0}/requirements.txt', inputs.context)) != ''
+        if: ${{ hashFiles(format('{0}/requirements.txt', inputs.context)) != '' }}
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install & Test (Python)
-        if: hashFiles(format('{0}/requirements.txt', inputs.context)) != ''
+        if: ${{ hashFiles(format('{0}/requirements.txt', inputs.context)) != '' }}
         working-directory: ${{ inputs.context }}
         run: |
           python -m pip install -r requirements.txt
           pytest -q || true
 
-      # Optional custom test command (works for any stack)
       - name: Custom tests
-        if: inputs.test_command != ''
+        if: ${{ inputs.test_command != '' }}
         working-directory: ${{ inputs.context }}
         run: ${{ inputs.test_command }}
 
-      # =======================
-      # Build & (optionally) Push
-      # =======================
-
-      # Azure login via OIDC (safe, no client secret)
+      # ---------- Build & (optionally) push ----------
       - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
@@ -79,15 +88,13 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # ACR login (uses the Azure context from azure/login)
       - name: Log in to ACR
         run: az acr login --name ${{ inputs.acr_name }}
 
-      # Enable Buildx + GHA cache for faster builds
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (push=${{ inputs.push }})
+      - name: Build image (push = ${{ inputs.push }})
         uses: docker/build-push-action@v6
         with:
           context: ${{ inputs.context }}
@@ -97,6 +104,5 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Helpful output for later deploy steps / logs
       - name: Show image tag
         run: echo "IMAGE=${{ inputs.acr_name }}.azurecr.io/${{ inputs.image_name }}:${{ github.sha }}"
