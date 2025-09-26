@@ -26,15 +26,19 @@ on:
       acr_name:
         required: true
         type: string          # SHORT ACR name, e.g., week09acr91990
-    # NOTE: using AZURE_CREDENTIALS (service principal JSON) instead of OIDC
     secrets:
-      AZURE_CREDENTIALS:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
         required: true
 
 jobs:
   build_test_push:
     runs-on: ubuntu-latest
     permissions:
+      id-token: write     # required for OIDC
       contents: read
       packages: write
 
@@ -77,10 +81,12 @@ jobs:
         run: ${{ inputs.test_command }}
 
       # ---------- Build & (optionally) push ----------
-      - name: Azure login (service principal JSON)
+      - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Log in to ACR
         run: az acr login --name ${{ inputs.acr_name }}
