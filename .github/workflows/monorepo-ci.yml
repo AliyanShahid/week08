@@ -1,0 +1,40 @@
+name: Monorepo CI (build & push)
+
+on:
+  pull_request:
+    branches: [ main, dev ]
+    paths:
+      - 'frontend/**'
+      - 'backend/**'
+      - '.github/workflows/**'
+  push:
+    branches: [ main ]
+    paths:
+      - 'frontend/**'
+      - 'backend/**'
+      - '.github/workflows/**'
+
+permissions:
+  id-token: write
+  contents: read
+  packages: write
+
+jobs:
+  per-service:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { service: frontend, context: frontend, dockerfile: Dockerfile, image_name: frontend }
+          - { service: backend,  context: backend,  dockerfile: Dockerfile, image_name: backend  }
+
+    uses: ./.github/workflows/reusable-ci.yml
+    with:
+      service:     ${{ matrix.service }}
+      context:     ${{ matrix.context }}
+      dockerfile:  ${{ matrix.dockerfile }}
+      image_name:  ${{ matrix.image_name }}
+      # PRs: build/test only; main: also push to ACR
+      push:        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      acr_name:    week09acr91990
+    secrets: inherit
